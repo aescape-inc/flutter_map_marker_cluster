@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/src/core/distance_grid.dart';
@@ -41,11 +43,15 @@ class ClusterManager {
   }) {
     final len = maxZoom - minZoom + 1;
     final gridClusters = List<DistanceGrid<MarkerClusterNode>>.generate(
-        len, (_) => DistanceGrid(maxClusterRadius),
-        growable: false);
+      len,
+      (_) => DistanceGrid(maxClusterRadius),
+      growable: false,
+    );
     final gridUnclustered = List<DistanceGrid<MarkerNode>>.generate(
-        len, (_) => DistanceGrid(maxClusterRadius),
-        growable: false);
+      len,
+      (_) => DistanceGrid(maxClusterRadius),
+      growable: false,
+    );
 
     final topClusterLevel = MarkerClusterNode(
       alignment: alignment,
@@ -66,22 +72,59 @@ class ClusterManager {
     );
   }
 
-  void addLayer(MarkerNode marker, int disableClusteringAtZoom, int maxZoom,
-      int minZoom) {
+  MarkerClusterNode? findClosestCluster(Point<double> markerPoint, int zoom) {
+    final gridClusters = _gridClusters[zoom - minZoom];
+    MarkerClusterNode? closestCluster;
+    var closestDist = double.infinity;
+
+    for (final cluster in gridClusters.grid.values.expand((x) => x)) {
+      for (final marker in cluster.obj.markers) {
+        final markerProjected =
+            mapCalculator.project(marker.point, zoom: zoom.toDouble());
+        final dist = markerProjected.distanceTo(markerPoint);
+
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestCluster = cluster.obj;
+        }
+      }
+    }
+
+    return closestCluster;
+  }
+
+  void addLayer(
+    MarkerNode newMarker,
+    int disableClusteringAtZoom,
+    int maxZoom,
+    int minZoom,
+  ) {
     for (var zoom = maxZoom; zoom >= minZoom; zoom--) {
-      final markerPoint =
-          mapCalculator.project(marker.point, zoom: zoom.toDouble());
+      final gridIndex = zoom - minZoom;
+      final gridUnclustered = _gridUnclustered[gridIndex];
+      final cellSize = gridUnclustered.cellSize;
+      final newMarkerPoint = mapCalculator.project(
+        newMarker.point,
+        zoom: zoom.toDouble(),
+      );
       if (zoom <= disableClusteringAtZoom) {
-        // try find a cluster close by
-        final cluster =
-            _gridClusters[zoom - minZoom].getNearObject(markerPoint);
+        final cluster = findClosestCluster(newMarkerPoint, zoom);
         if (cluster != null) {
-          cluster.addChild(marker, marker.point);
-          return;
+          for (final oldMarker in cluster.mapMarkers) {
+            final oldMarkerPoint = mapCalculator.project(
+              oldMarker.point,
+              zoom: zoom.toDouble(),
+            );
+            final isNewNearOld =
+                oldMarkerPoint.distanceTo(newMarkerPoint).floor() <= cellSize;
+            if (isNewNearOld) {
+              cluster.addChild(newMarker, newMarker.point);
+              return;
+            }
+          }
         }
 
-        final closest =
-            _gridUnclustered[zoom - minZoom].getNearObject(markerPoint);
+        final closest = gridUnclustered.getNearObject(newMarkerPoint);
         if (closest != null) {
           final parent = closest.parent!;
           parent.removeChild(closest);
@@ -93,9 +136,24 @@ class ClusterManager {
             computeSize: computeSize,
           )
             ..addChild(closest, closest.point)
-            ..addChild(marker, closest.point);
+            ..addChild(newMarker, closest.point);
 
-          _gridClusters[zoom - minZoom].addObject(
+          gridUnclustered.eachObject((node) {
+            if (node.point != closest.point) {
+              final nodePoint = mapCalculator.project(
+                node.point,
+                zoom: zoom.toDouble(),
+              );
+              if (nodePoint.distanceTo(newMarkerPoint).floor() <= cellSize) {
+                final nodeParent = node.parent!;
+                nodeParent.removeChild(node);
+                newCluster.addChild(node, closest.point);
+                gridUnclustered.removeObject(node);
+              }
+            }
+          });
+
+          _gridClusters[gridIndex].addObject(
             newCluster,
             mapCalculator.project(
               newCluster.bounds.center,
@@ -112,17 +170,12 @@ class ClusterManager {
               predefinedSize: predefinedSize,
               computeSize: computeSize,
             );
-            newParent.addChild(
-              lastParent,
-              lastParent.bounds.center,
-            );
+            newParent.addChild(lastParent, lastParent.bounds.center);
             lastParent = newParent;
             _gridClusters[z - minZoom].addObject(
               lastParent,
-              mapCalculator.project(
-                closest.point,
-                zoom: z.toDouble(),
-              ),
+              mapCalculator.project(lastParent.bounds.center,
+                  zoom: z.toDouble()),
             );
           }
           parent.addChild(lastParent, lastParent.bounds.center);
@@ -132,15 +185,18 @@ class ClusterManager {
         }
       }
 
-      _gridUnclustered[zoom - minZoom].addObject(marker, markerPoint);
+      _gridUnclustered[gridIndex].addObject(newMarker, newMarkerPoint);
     }
 
     //Didn't get in anything, add us to the top
-    _topClusterLevel.addChild(marker, marker.point);
+    _topClusterLevel.addChild(newMarker, newMarker.point);
   }
 
   void _removeFromNewPosToMyPosGridUnclustered(
-      MarkerNode marker, int zoom, int minZoom) {
+    MarkerNode marker,
+    int zoom,
+    int minZoom,
+  ) {
     for (; zoom >= minZoom; zoom--) {
       if (!_gridUnclustered[zoom - minZoom].removeObject(marker)) {
         break;
@@ -152,10 +208,15 @@ class ClusterManager {
       _topClusterLevel.recalculate(recursively: true);
 
   void recursivelyFromTopClusterLevel(
-          int zoomLevel,
-          int disableClusteringAtZoom,
-          LatLngBounds recursionBounds,
-          Function(MarkerOrClusterNode) fn) =>
+    int zoomLevel,
+    int disableClusteringAtZoom,
+    LatLngBounds recursionBounds,
+    Function(MarkerOrClusterNode) fn,
+  ) =>
       _topClusterLevel.recursively(
-          zoomLevel, disableClusteringAtZoom, recursionBounds, fn);
+        zoomLevel,
+        disableClusteringAtZoom,
+        recursionBounds,
+        fn,
+      );
 }
