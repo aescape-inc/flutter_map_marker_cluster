@@ -27,7 +27,7 @@ class DistanceGrid<T> {
   final int cellSize;
   final double _sqCellSize;
 
-  final _grid = HashMap<GridKey, List<CellEntry<T>>>();
+  final grid = HashMap<GridKey, List<CellEntry<T>>>();
   final _objectPoint = HashMap<T, GridKey>();
 
   DistanceGrid(int cellSize)
@@ -35,13 +35,13 @@ class DistanceGrid<T> {
         _sqCellSize = (cellSize * cellSize).toDouble();
 
   void clear() {
-    _grid.clear();
+    grid.clear();
     _objectPoint.clear();
   }
 
   void addObject(T obj, Point<double> point) {
     final key = GridKey(_getCoord(point.y), _getCoord(point.x));
-    final cell = _grid[key] ??= [];
+    final cell = grid[key] ??= [];
 
     _objectPoint[obj] = key;
     cell.add(CellEntry<T>(point.x, point.y, obj));
@@ -58,16 +58,16 @@ class DistanceGrid<T> {
     if (key == null) return false;
 
     // Object existed in the _objectPoint map, thus must exist in the grid.
-    final cell = _grid[key]!;
+    final cell = grid[key]!;
     cell.removeWhere((e) => e.obj == obj);
     if (cell.isEmpty) {
-      _grid.remove(key);
+      grid.remove(key);
     }
     return true;
   }
 
   void eachObject(Function(T) fn) {
-    for (final cell in _grid.values) {
+    for (final cell in grid.values) {
       for (final entry in cell) {
         fn(entry.obj);
       }
@@ -89,7 +89,7 @@ class DistanceGrid<T> {
         break;
       }
 
-      final cell = _grid[GridKey(y + row, x + col)];
+      final cell = grid[GridKey(y + row, x + col)];
       if (cell != null) {
         for (final entry in cell) {
           final double dx = px - entry.x;
@@ -111,7 +111,7 @@ class DistanceGrid<T> {
     return closest;
   }
 
-  int _getCoord(double x) => x ~/ cellSize;
+  int _getCoord(double x) => x ~/ cellSize; 
 }
 
 // Row/Col offsets for immediate neighbors ordered by distance.
